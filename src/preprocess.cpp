@@ -162,7 +162,19 @@ void Preprocess::avia_handler(const livox_ros_driver::CustomMsg::ConstPtr &msg)
   {
     for(uint i=1; i<plsize; i++)
     {
+#if 1
+      uint8_t POS_CONF = 0x3 << 0; //0b00000011
+      uint8_t INT_CONF = 0x3 << 2; //0b00001100
+      uint8_t RETURN_N = 0x3 << 4; //0b00110000
+
+      uint pos_conf = (msg->points[i].tag & POS_CONF) >> 0;
+      uint int_conf = (msg->points[i].tag & INT_CONF) >> 2;
+      uint ret_num = (msg->points[i].tag & 0x30) >> 4;
+
+      if((msg->points[i].line < N_SCANS) && (ret_num > 0))
+#else
       if((msg->points[i].line < N_SCANS) && ((msg->points[i].tag & 0x30) == 0x10 || (msg->points[i].tag & 0x30) == 0x00))
+#endif
       {
         valid_num ++;
         if (valid_num % point_filter_num == 0)
