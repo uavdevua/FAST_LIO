@@ -38,6 +38,7 @@
 #include <thread>
 #include <fstream>
 #include <csignal>
+#include <cstdint>
 #include <unistd.h>
 #include <Python.h>
 #include <so3_math.h>
@@ -64,6 +65,22 @@
 #define LASER_POINT_COV     (0.001)
 #define MAXN                (720000)
 #define PUBFRAME_PERIOD     (20)
+
+struct EIGEN_ALIGN16 PointXYZIReturn
+{
+    PCL_ADD_POINT4D;
+    float intensity;
+    float return_id;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+};
+
+POINT_CLOUD_REGISTER_POINT_STRUCT(PointXYZIReturn,
+    (float, x, x)
+    (float, y, y)
+    (float, z, z)
+    (float, intensity, intensity)
+    (float, return_id, return_id)
+)
 
 /*** Time Log Variables ***/
 double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_time = 0.0;
@@ -93,7 +110,7 @@ int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count =
 int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, pcd_save_interval = -1, pcd_index = 0;
 bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
-bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
+bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false, return_clouds_pub_en = false;
 int lidar_type;
 
 vector<vector<int>>  pointSearchInd_surf; 
@@ -107,6 +124,7 @@ deque<sensor_msgs::Imu::ConstPtr> imu_buffer;
 
 PointCloudXYZI::Ptr featsFromMap(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_undistort(new PointCloudXYZI());
+PointCloudXYZI::Ptr feats_slam_undistort(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_body(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_world(new PointCloudXYZI());
 PointCloudXYZI::Ptr normvec(new PointCloudXYZI(100000, 1));
@@ -172,6 +190,9 @@ void pointBodyToWorld_ikfom(PointType const * const pi, PointType * const po, st
     po->y = p_global(1);
     po->z = p_global(2);
     po->intensity = pi->intensity;
+    po->normal_x = pi->normal_x;
+    po->normal_y = pi->normal_y;
+    po->normal_z = pi->normal_z;
 }
 
 
@@ -184,6 +205,9 @@ void pointBodyToWorld(PointType const * const pi, PointType * const po)
     po->y = p_global(1);
     po->z = p_global(2);
     po->intensity = pi->intensity;
+    po->normal_x = pi->normal_x;
+    po->normal_y = pi->normal_y;
+    po->normal_z = pi->normal_z;
 }
 
 template<typename T>
@@ -206,6 +230,9 @@ void RGBpointBodyToWorld(PointType const * const pi, PointType * const po)
     po->y = p_global(1);
     po->z = p_global(2);
     po->intensity = pi->intensity;
+    po->normal_x = pi->normal_x;
+    po->normal_y = pi->normal_y;
+    po->normal_z = pi->normal_z;
 }
 
 void RGBpointBodyLidarToIMU(PointType const * const pi, PointType * const po)
@@ -217,6 +244,9 @@ void RGBpointBodyLidarToIMU(PointType const * const pi, PointType * const po)
     po->y = p_body_imu(1);
     po->z = p_body_imu(2);
     po->intensity = pi->intensity;
+    po->normal_x = pi->normal_x;
+    po->normal_y = pi->normal_y;
+    po->normal_z = pi->normal_z;
 }
 
 void points_cache_collect()
@@ -224,6 +254,12 @@ void points_cache_collect()
     PointVector points_history;
     ikdtree.acquire_removed_points(points_history);
     // for (int i = 0; i < points_history.size(); i++) _featsArray->push_back(points_history[i]);
+}
+
+inline bool use_point_for_slam(const PointType &point)
+{
+    int return_id = static_cast<int>(point.normal_x + 0.5f);
+    return return_id <= 1;
 }
 
 BoxPointType LocalMap_Points;
@@ -475,6 +511,29 @@ void map_incremental()
 
 PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI(500000, 1));
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
+
+void save_pcd_with_return_id(const string &file_path, const PointCloudXYZI &cloud)
+{
+    pcl::PointCloud<PointXYZIReturn> save_cloud;
+    save_cloud.reserve(cloud.size());
+    save_cloud.header = cloud.header;
+    save_cloud.is_dense = cloud.is_dense;
+
+    for (const auto &src : cloud.points)
+    {
+        PointXYZIReturn dst;
+        dst.x = src.x;
+        dst.y = src.y;
+        dst.z = src.z;
+        dst.intensity = src.intensity;
+        dst.return_id = src.normal_x;
+        save_cloud.push_back(dst);
+    }
+
+    pcl::PCDWriter pcd_writer;
+    pcd_writer.writeBinary(file_path, save_cloud);
+}
+
 void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
 {
     if(scan_pub_en)
@@ -520,12 +579,46 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
         {
             pcd_index ++;
             string all_points_dir(string(string(ROOT_DIR) + "PCD/scans_") + to_string(pcd_index) + string(".pcd"));
-            pcl::PCDWriter pcd_writer;
             cout << "current scan saved to /PCD/" << all_points_dir << endl;
-            pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+            save_pcd_with_return_id(all_points_dir, *pcl_wait_save);
             pcl_wait_save->clear();
             scan_wait_num = 0;
         }
+    }
+}
+
+void publish_return_clouds_world(const ros::Publisher &pubReturn1,
+                                 const ros::Publisher &pubReturn2,
+                                 const ros::Publisher &pubReturn3)
+{
+    if (!scan_pub_en || !return_clouds_pub_en) return;
+
+    PointCloudXYZI::Ptr returnClouds[3] = {
+        PointCloudXYZI::Ptr(new PointCloudXYZI()),
+        PointCloudXYZI::Ptr(new PointCloudXYZI()),
+        PointCloudXYZI::Ptr(new PointCloudXYZI())
+    };
+
+    for (const auto &point_body : feats_undistort->points)
+    {
+        int return_id = static_cast<int>(point_body.normal_x + 0.5f);
+        if (return_id < 1 || return_id > 3) continue;
+
+        PointType point_world;
+        RGBpointBodyToWorld(&point_body, &point_world);
+        returnClouds[return_id - 1]->push_back(point_world);
+    }
+
+    const ros::Publisher *publishers[3] = {&pubReturn1, &pubReturn2, &pubReturn3};
+    for (int i = 0; i < 3; ++i)
+    {
+        if (returnClouds[i]->empty()) continue;
+
+        sensor_msgs::PointCloud2 msg;
+        pcl::toROSMsg(*returnClouds[i], msg);
+        msg.header.stamp = ros::Time().fromSec(lidar_end_time);
+        msg.header.frame_id = "camera_init";
+        publishers[i]->publish(msg);
     }
 }
 
@@ -762,6 +855,7 @@ int main(int argc, char** argv)
     nh.param<bool>("publish/scan_publish_en",scan_pub_en, true);
     nh.param<bool>("publish/dense_publish_en",dense_pub_en, true);
     nh.param<bool>("publish/scan_bodyframe_pub_en",scan_body_pub_en, true);
+    nh.param<bool>("publish/return_clouds_pub_en",return_clouds_pub_en, false);
     nh.param<int>("max_iteration",NUM_MAX_ITERATIONS,4);
     nh.param<string>("map_file_path",map_file_path,"");
     nh.param<string>("common/lid_topic",lid_topic,"/livox/lidar");
@@ -850,6 +944,12 @@ int main(int argc, char** argv)
             ("/cloud_registered", 100000);
     ros::Publisher pubLaserCloudFull_body = nh.advertise<sensor_msgs::PointCloud2>
             ("/cloud_registered_body", 100000);
+    ros::Publisher pubLaserCloudReturn1 = nh.advertise<sensor_msgs::PointCloud2>
+            ("/cloud_registered_return_1", 100000);
+    ros::Publisher pubLaserCloudReturn2 = nh.advertise<sensor_msgs::PointCloud2>
+            ("/cloud_registered_return_2", 100000);
+    ros::Publisher pubLaserCloudReturn3 = nh.advertise<sensor_msgs::PointCloud2>
+            ("/cloud_registered_return_3", 100000);
     ros::Publisher pubLaserCloudEffect = nh.advertise<sensor_msgs::PointCloud2>
             ("/cloud_effected", 100000);
     ros::Publisher pubLaserCloudMap = nh.advertise<sensor_msgs::PointCloud2>
@@ -895,13 +995,28 @@ int main(int argc, char** argv)
                 continue;
             }
 
+            feats_slam_undistort->clear();
+            feats_slam_undistort->reserve(feats_undistort->size());
+            for (const auto &point : feats_undistort->points)
+            {
+                if (use_point_for_slam(point))
+                {
+                    feats_slam_undistort->push_back(point);
+                }
+            }
+            if (feats_slam_undistort->empty())
+            {
+                ROS_WARN("No first-return point, skip this scan!\n");
+                continue;
+            }
+
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;
             /*** Segment the map in lidar FOV ***/
             lasermap_fov_segment();
 
             /*** downsample the feature points in a scan ***/
-            downSizeFilterSurf.setInputCloud(feats_undistort);
+            downSizeFilterSurf.setInputCloud(feats_slam_undistort);
             downSizeFilterSurf.filter(*feats_down_body);
             t1 = omp_get_wtime();
             feats_down_size = feats_down_body->points.size();
@@ -979,6 +1094,7 @@ int main(int argc, char** argv)
             /******* Publish points *******/
             if (path_en)                         publish_path(pubPath);
             if (scan_pub_en || pcd_save_en)      publish_frame_world(pubLaserCloudFull);
+            if (scan_pub_en && return_clouds_pub_en) publish_return_clouds_world(pubLaserCloudReturn1, pubLaserCloudReturn2, pubLaserCloudReturn3);
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
             // publish_effect_world(pubLaserCloudEffect);
             // publish_map(pubLaserCloudMap);
@@ -1025,9 +1141,8 @@ int main(int argc, char** argv)
     {
         string file_name = string("scans.pcd");
         string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
-        pcl::PCDWriter pcd_writer;
         cout << "current scan saved to /PCD/" << file_name<<endl;
-        pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+        save_pcd_with_return_id(all_points_dir, *pcl_wait_save);
     }
 
     fout_out.close();
