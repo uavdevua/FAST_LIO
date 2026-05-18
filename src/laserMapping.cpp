@@ -47,6 +47,7 @@
 #include "IMU_Processing.hpp"
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
+#include <fast_lio/Speed.h>
 #include <visualization_msgs/Marker.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
@@ -685,6 +686,9 @@ void publish_odometry(const ros::Publisher & pubOdomAftMapped)
     odomAftMapped.child_frame_id = "body";
     odomAftMapped.header.stamp = ros::Time().fromSec(lidar_end_time);// ros::Time().fromSec(lidar_end_time);
     set_posestamp(odomAftMapped.pose);
+    odomAftMapped.twist.twist.linear.x = state_point.vel(0);
+    odomAftMapped.twist.twist.linear.y = state_point.vel(1);
+    odomAftMapped.twist.twist.linear.z = state_point.vel(2);
     pubOdomAftMapped.publish(odomAftMapped);
     auto P = kf.get_P();
     for (int i = 0; i < 6; i ++)
@@ -710,6 +714,18 @@ void publish_odometry(const ros::Publisher & pubOdomAftMapped)
     q.setZ(odomAftMapped.pose.pose.orientation.z);
     transform.setRotation( q );
     br.sendTransform( tf::StampedTransform( transform, odomAftMapped.header.stamp, "camera_init", "body" ) );
+}
+
+void publish_speed(const ros::Publisher &pubSpeed)
+{
+    fast_lio::Speed speed_msg;
+    speed_msg.header.stamp = ros::Time().fromSec(lidar_end_time);
+    speed_msg.header.frame_id = "camera_init";
+    speed_msg.x = state_point.vel(0);
+    speed_msg.y = state_point.vel(1);
+    speed_msg.z = state_point.vel(2);
+    speed_msg.v = state_point.vel.norm();
+    pubSpeed.publish(speed_msg);
 }
 
 void publish_path(const ros::Publisher pubPath)
@@ -956,6 +972,8 @@ int main(int argc, char** argv)
             ("/Laser_map", 100000);
     ros::Publisher pubOdomAftMapped = nh.advertise<nav_msgs::Odometry> 
             ("/Odometry", 100000);
+    ros::Publisher pubSpeed = nh.advertise<fast_lio::Speed>
+            ("/speed", 100000);
     ros::Publisher pubPath          = nh.advertise<nav_msgs::Path> 
             ("/path", 100000);
 //------------------------------------------------------------------------------------------------------
@@ -1085,6 +1103,7 @@ int main(int argc, char** argv)
 
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped);
+            publish_speed(pubSpeed);
 
             /*** add the feature points to map kdtree ***/
             t3 = omp_get_wtime();
