@@ -13,9 +13,9 @@ preprocess:
 point_filter_num: 1 #4
 max_iteration: 8 #4
 filter_size_corner: 0.1 #0.5
-filter_size_surf: 1.2 #0.5
-filter_size_map: 1.2 #0.5
-cube_side_length: 1000.0 #200.0
+filter_size_surf: 0.5 #0.5
+filter_size_map: 0.5 #0.5
+cube_side_length: 75.0 #200.0
 
 feature_extract_enable: false  # true: enable feature extraction and use features for mapping; false: use all points for mapping
 runtime_pos_log_enable: false
